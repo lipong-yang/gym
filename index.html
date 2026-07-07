@@ -261,6 +261,16 @@
     <div class="subview active" id="sub-track">
       <div class="card">
         <h2>🏃 Live Run</h2>
+        <div class="grid2">
+          <div class="field"><label>Your Weight (kg)</label><input type="number" id="weightKg" min="20" max="300" value="70"></div>
+          <div class="field"><label>Voice Status Updates</label>
+            <select id="announceInterval">
+              <option value="1" selected>Every 1 km + 10 min</option>
+              <option value="0.5">Every 500 m + 10 min</option>
+              <option value="0">Off</option>
+            </select>
+          </div>
+        </div>
         <div id="preRunBox">
           <button class="btn" id="startRunBtn" style="width:100%;">▶ Start Run</button>
         </div>
@@ -268,8 +278,9 @@
           <div id="liveMap" class="map-box"></div>
           <div class="run-stats-row">
             <div class="run-stat"><div class="val" id="liveDist">0.00</div><div class="lbl">km</div></div>
-            <div class="run-stat"><div class="val" id="liveDur">00:00</div><div class="lbl">time</div></div>
+            <div class="run-stat"><div class="val" id="liveDur">00:00</div><div class="lbl">moving time</div></div>
             <div class="run-stat"><div class="val" id="livePace">--:--</div><div class="lbl">/km pace</div></div>
+            <div class="run-stat"><div class="val" id="liveKcal">0</div><div class="lbl">kcal</div></div>
           </div>
           <div class="row" style="justify-content:center;">
             <span class="gps-badge" id="gpsBadge">GPS: —</span>
@@ -326,7 +337,13 @@ document.getElementById('dateLine').textContent = fmtDateLine();
 function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      if(!parsed.settings) parsed.settings = {weightKg:70, announceStepKm:1};
+      if(parsed.settings.weightKg==null) parsed.settings.weightKg = 70;
+      if(parsed.settings.announceStepKm==null) parsed.settings.announceStepKm = 1;
+      return parsed;
+    }
   }catch(e){}
   return {
     exercises:[
@@ -337,7 +354,8 @@ function loadState(){
     weightExercises:[
       {id:'we_squat', name:'Squat', goalWeight:60, goalReps:5, goalSets:3}
     ],
-    weightLogs:[]
+    weightLogs:[],
+    settings:{weightKg:70, announceStepKm:1}
   };
 }
 let state = loadState();
@@ -498,6 +516,15 @@ function beep(freq=880, dur=0.12, delay=0){
   }catch(e){}
 }
 
+function speak(text, rate=1.05){
+  try{
+    if(!('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = rate; u.pitch = 1; u.volume = 1;
+    window.speechSynthesis.speak(u);
+  }catch(e){}
+}
+
 const ringFg = document.getElementById('ringFg');
 const timeBig = document.getElementById('timeBig');
 const phaseLabel = document.getElementById('phaseLabel');
@@ -528,6 +555,7 @@ function buildSequence(){
 }
 
 let seqData = null, seqIdx = 0, remaining = 0, totalRounds = 0, running=false, intervalId=null;
+let preCountdownTimer = null, preCountdownActive = false;
 
 function updateDisplay(){
   if(!seqData){
@@ -553,37 +581,83 @@ function updateDisplay(){
 
 function tick(){
   remaining--;
+  if(remaining>0 && remaining<=3){
+    speak(String(remaining));
+    beep(440, 0.1, 0);
+  }
   if(remaining<=0){
     seqIdx++;
     const nextStep = seqData.seq[seqIdx];
     if(!nextStep){
+      speak('Workout done!');
       beep(1046,0.15,0); beep(1318,0.15,0.18); beep(1568,0.2,0.36);
       stopTimer(false);
       updateDisplay();
       return;
     }
     remaining = nextStep.dur;
+    const word = nextStep.phase==='work' ? 'Go!' : nextStep.phase==='rest' ? 'Rest!' : null;
+    if(word) speak(word);
     beep(nextStep.phase==='work'?880:520, 0.15, 0);
   }
   updateDisplay();
 }
 
 function startTimer(){
+  if(running || preCountdownActive) return;
   if(!seqData){
-    const built = buildSequence();
-    seqData = built; totalRounds = built.rounds; seqIdx=0;
-    remaining = seqData.seq[0] ? seqData.seq[0].dur : 0;
-    beep(880,0.15,0);
+    // Fresh start: run a spoken 3-2-1 lead-in before the clock actually begins
+    preCountdownActive = true;
+    document.getElementById('startBtn').disabled = true;
+    let n = 3;
+    phaseLabel.textContent = 'Get Ready';
+    phaseLabel.className = 'phase-label warm';
+    timeBig.textContent = String(n);
+    roundLabel.textContent = 'Starting…';
+    setRing(0, 'warm');
+    speak(String(n));
+    beep(440, 0.1, 0);
+    preCountdownTimer = setInterval(()=>{
+      n--;
+      if(n>0){
+        timeBig.textContent = String(n);
+        speak(String(n));
+        beep(440, 0.1, 0);
+      } else {
+        clearInterval(preCountdownTimer);
+        preCountdownActive = false;
+        beginSequence();
+      }
+    }, 1000);
+    return;
   }
+  resumeSequence();
+}
+
+function beginSequence(){
+  const built = buildSequence();
+  seqData = built; totalRounds = built.rounds; seqIdx = 0;
+  remaining = seqData.seq[0] ? seqData.seq[0].dur : 0;
+  const firstPhase = seqData.seq[0] ? seqData.seq[0].phase : 'work';
+  speak(firstPhase==='rest' ? 'Rest!' : 'Go!');
+  beep(880, 0.15, 0);
+  resumeSequence();
+}
+
+function resumeSequence(){
   running = true;
   document.getElementById('startBtn').disabled = true;
   document.getElementById('pauseBtn').disabled = false;
   intervalId = setInterval(tick, 1000);
   updateDisplay();
 }
+
 function stopTimer(reset){
   running = false;
   clearInterval(intervalId);
+  clearInterval(preCountdownTimer);
+  preCountdownActive = false;
+  if('speechSynthesis' in window) window.speechSynthesis.cancel();
   document.getElementById('startBtn').disabled = false;
   document.getElementById('pauseBtn').disabled = true;
   if(reset){
@@ -884,6 +958,65 @@ let liveMap=null, livePolyline=null, liveMarker=null;
 let watchId=null, runTimerInterval=null;
 let trackPoints=[], runPaused=false, pauseStart=null, pausedMs=0, runStartTs=null;
 let runningInited=false;
+let lastAnnouncedDistStep=0, lastAnnouncedTimeStep=0;
+
+function getWeightKg(){
+  const v = parseFloat(document.getElementById('weightKg')?.value);
+  return (v>0) ? v : 70;
+}
+function getAnnounceStepKm(){
+  const v = parseFloat(document.getElementById('announceInterval')?.value);
+  return isNaN(v) ? 1 : v;
+}
+function computeCalories(distanceM, weightKg){
+  // ~1.036 kcal per kg body weight per km run (standard running estimate)
+  return Math.round((distanceM/1000) * weightKg * 1.036);
+}
+function spokenDuration(sec){
+  sec = Math.round(sec);
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  if(h>0) return `${h} hour${h!==1?'s':''} ${m} minute${m!==1?'s':''}`;
+  if(m>0) return `${m} minute${m!==1?'s':''}`;
+  return `${s} second${s!==1?'s':''}`;
+}
+function spokenPace(paceSecPerKm){
+  if(!isFinite(paceSecPerKm) || paceSecPerKm<=0) return 'not available yet';
+  const m = Math.floor(paceSecPerKm/60), s = Math.round(paceSecPerKm%60);
+  return `${m} minute${m!==1?'s':''} ${s} second${s!==1?'s':''} per kilometer`;
+}
+function announceStatus(){
+  const cum = computeCumulativeDistances(trackPoints);
+  const distM = cum[cum.length-1] || 0;
+  const elapsedMs = runPaused ? (pauseStart-runStartTs-pausedMs) : (Date.now()-runStartTs-pausedMs);
+  const elapsedSec = elapsedMs/1000;
+  const distKm = distM/1000;
+  const paceSecPerKm = distM>50 ? elapsedSec/distKm : null;
+  const cals = computeCalories(distM, getWeightKg());
+  const bits = [
+    `${distKm.toFixed(2)} kilometers`,
+    `moving time ${spokenDuration(elapsedSec)}`,
+    paceSecPerKm ? `pace ${spokenPace(paceSecPerKm)}` : 'pace not available yet',
+    `${cals} calories burned`
+  ];
+  speak(bits.join('. ') + '.');
+  toast(`📢 ${distKm.toFixed(2)} km · ${paceStr(elapsedSec, distM)}/km · ${cals} kcal`);
+}
+function checkAnnouncements(distM, elapsedSec){
+  const stepKm = getAnnounceStepKm();
+  if(stepKm<=0) return; // voice updates off
+  const distKm = distM/1000;
+  const distStep = Math.floor(distKm/stepKm + 1e-9);
+  if(distStep > lastAnnouncedDistStep && distKm > 0){
+    lastAnnouncedDistStep = distStep;
+    announceStatus();
+    return;
+  }
+  const timeStep = Math.floor(elapsedSec/600 + 1e-9); // every 10 minutes
+  if(timeStep > lastAnnouncedTimeStep && elapsedSec > 0){
+    lastAnnouncedTimeStep = timeStep;
+    announceStatus();
+  }
+}
 
 function initRunningTab(){
   if(!window.isSecureContext){
@@ -891,6 +1024,16 @@ function initRunningTab(){
   }
   if(!runningInited){
     runningInited = true;
+    document.getElementById('weightKg').value = state.settings.weightKg;
+    document.getElementById('announceInterval').value = String(state.settings.announceStepKm);
+    document.getElementById('weightKg').addEventListener('change', ()=>{
+      state.settings.weightKg = getWeightKg();
+      save();
+    });
+    document.getElementById('announceInterval').addEventListener('change', ()=>{
+      state.settings.announceStepKm = getAnnounceStepKm();
+      save();
+    });
     document.querySelectorAll('.subtab-btn').forEach(b=>{
       b.addEventListener('click', ()=>{
         document.querySelectorAll('.subtab-btn').forEach(x=>x.classList.remove('active'));
@@ -933,6 +1076,7 @@ function updateGpsBadge(state){
 function startRun(){
   if(!navigator.geolocation){ toast('Geolocation not supported on this device'); return; }
   trackPoints = []; runStartTs = Date.now(); pausedMs = 0; runPaused = false;
+  lastAnnouncedDistStep = 0; lastAnnouncedTimeStep = 0;
   document.getElementById('preRunBox').style.display='none';
   document.getElementById('liveRunBox').style.display='block';
   document.getElementById('saveRunBox').style.display='none';
@@ -963,9 +1107,12 @@ function updateLiveStatsDisplay(){
   const cum = computeCumulativeDistances(trackPoints);
   const dist = cum[cum.length-1] || 0;
   const elapsedMs = runPaused ? (pauseStart-runStartTs-pausedMs) : (Date.now()-runStartTs-pausedMs);
+  const elapsedSec = elapsedMs/1000;
   document.getElementById('liveDist').textContent = (dist/1000).toFixed(2);
-  document.getElementById('liveDur').textContent = fmtDuration(elapsedMs/1000);
-  document.getElementById('livePace').textContent = paceStr(elapsedMs/1000, dist);
+  document.getElementById('liveDur').textContent = fmtDuration(elapsedSec);
+  document.getElementById('livePace').textContent = paceStr(elapsedSec, dist);
+  document.getElementById('liveKcal').textContent = computeCalories(dist, getWeightKg());
+  if(!runPaused) checkAnnouncements(dist, elapsedSec);
 }
 function togglePauseRun(){
   if(!runPaused){
@@ -998,6 +1145,7 @@ async function confirmSaveRun(){
     date: todayStr(),
     points: trackPoints,
     distanceM: stats.distanceM, durationSec: stats.durationSec, elevGainM: stats.elevGainM, splits: stats.splits,
+    caloriesKcal: computeCalories(stats.distanceM, getWeightKg()),
     photos: [], source: 'live'
   };
   await dbPutRun(run);
@@ -1048,6 +1196,7 @@ async function handleGpxImport(e){
       notes: '',
       date: todayStr(new Date(points[0].ts)),
       points, distanceM: stats.distanceM, durationSec: stats.durationSec, elevGainM: stats.elevGainM, splits: stats.splits,
+      caloriesKcal: computeCalories(stats.distanceM, getWeightKg()),
       photos: [], source: 'gpx-import'
     };
     await dbPutRun(run);
@@ -1113,9 +1262,10 @@ async function openRunDetail(id){
       <div id="detailMap" class="map-box" style="margin-top:10px;"></div>
       <div class="run-stats-row">
         <div class="run-stat"><div class="val">${km}</div><div class="lbl">km</div></div>
-        <div class="run-stat"><div class="val">${fmtDuration(run.durationSec)}</div><div class="lbl">time</div></div>
+        <div class="run-stat"><div class="val">${fmtDuration(run.durationSec)}</div><div class="lbl">moving time</div></div>
         <div class="run-stat"><div class="val">${pace}</div><div class="lbl">/km</div></div>
         <div class="run-stat"><div class="val">${run.elevGainM!=null?Math.round(run.elevGainM)+'m':'—'}</div><div class="lbl">elev+</div></div>
+        <div class="run-stat"><div class="val">${run.caloriesKcal!=null?run.caloriesKcal:computeCalories(run.distanceM, getWeightKg())}</div><div class="lbl">kcal</div></div>
       </div>
       <button class="btn secondary btn-sm" id="replayBtn" style="width:100%;">▶ Replay Run</button>
       <div id="replayBox" style="display:none;margin-top:12px;">
