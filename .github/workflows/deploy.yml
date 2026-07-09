@@ -24,6 +24,18 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Check required secrets
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          missing=0
+          [ -z "$VITE_SUPABASE_URL" ] && { echo "::error::Missing secret VITE_SUPABASE_URL"; missing=1; }
+          [ -z "$VITE_SUPABASE_ANON_KEY" ] && { echo "::error::Missing secret VITE_SUPABASE_ANON_KEY"; missing=1; }
+          if [ "$missing" = 1 ]; then
+            echo "::error::Add them in Settings -> Secrets and variables -> Actions, then re-run."
+            exit 1
+          fi
       - name: Build
         env:
           # Set these in: repo Settings -> Secrets and variables -> Actions.
